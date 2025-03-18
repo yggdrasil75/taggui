@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import List, Set, Tuple
+import time
+import os
 
 import exifread
 from PySide6.QtCore import (QAbstractListModel, QModelIndex, QSize, Qt, Signal,
@@ -29,6 +31,151 @@ def pil_to_qimage(pil_image):
     data = pil_image.tobytes("raw", "RGBA")
     qimage = QImage(data, pil_image.width, pil_image.height, QImage.Format_RGBA8888)
     return qimage
+
+def get_os_thumbnail(file_path: str, image_width: int) -> QIcon | None:
+    """
+    Attempts to retrieve a thumbnail from the OS thumbnail cache.
+
+    Args:
+        file_path: The path to the image file.
+        image_width: The desired width of the thumbnail.
+
+    Returns:
+        A QIcon if the OS thumbnail is found and loaded successfully,
+        otherwise None.
+    """
+
+    # Windows Thumbnail Cache (requires pywin32)
+    if os.name == 'nt':
+        try:
+            import win32com.client
+            import pythoncom
+
+            # Ensure COM is initialized for this thread (if not already)
+            pythoncom.CoInitialize()
+            shell = win32com.client.Dispatch("Shell.Application")
+            folder_path, file_name = os.path.split(file_path)
+            folder = shell.NameSpace(folder_path)
+            if folder: #check the folder exists
+                item = folder.ParseName(file_name)
+                if item:
+                    # Thumbnail size constants (approximate)
+                    # 0: Small (96x96)
+                    # 1: Medium (256x256)
+                    # 2: Large (256x256, same as medium)
+                    # 3: Extra Large (platform dependent, often 256 but can be higher)
+                    # 4: Jumbo (256x256)
+                    thumb = folder.GetDetailsOf(item, 179)  #179 for thumbnail.
+                    if thumb: #check we got something.
+                        #The thumbnail *is* text representing the file path.
+                        #So, we need to load it.
+                        #This is the most correct way, creating a pixmap, and QIcon.
+                        thumb_pixmap = QPixmap(thumb)
+                        if not thumb_pixmap.isNull():
+                            thumb_pixmap = thumb_pixmap.scaledToWidth(image_width, Qt.SmoothTransformation)
+                            return QIcon(thumb_pixmap)
+                        else:
+                            return None #Explicitly return None if the pixmap fails.
+            return None  # Return None if any of the shell operations fail
+
+        except ImportError:
+            print("pywin32 is not installed. OS thumbnail retrieval on Windows will not work.")
+            return None
+        except Exception as e:
+            print(f"Error getting OS thumbnail: {e}")
+            return None
+    elif sys.platform == "darwin":
+        try:
+            # macOS QuickLook (qlmanage)
+            # Use qlmanage to generate the thumbnail
+            command = [
+                "qlmanage",
+                "-t", str(file_path),  # -t generates thumbnail
+                "-s", f"{image_width}x{image_width}",  # Set the size
+                "-o", "/tmp",  # Output directory
+            ]
+            result = subprocess.run(command, capture_output=True, text=True, check=True)
+
+            # qlmanage creates a file named <original_name>.png in /tmp
+            thumbnail_path = os.path.join("/tmp", os.path.basename(file_path) + ".png")
+
+            if os.path.exists(thumbnail_path):
+                pixmap = QPixmap(thumbnail_path)
+                if not pixmap.isNull():
+                    # qlmanage sometimes ignores the size request, so we need to scale
+                    pixmap = pixmap.scaledToWidth(image_width, Qt.SmoothTransformation)
+                    os.remove(thumbnail_path)  # Clean up the temporary file
+                    return QIcon(pixmap)
+                else:
+                    os.remove(thumbnail_path)
+                    return None
+            else:
+                return None
+
+        except subprocess.CalledProcessError as e:
+            print(f"qlmanage failed: {e}")
+            return None
+        except Exception as e:
+            print(f"Error getting macOS thumbnail: {e}")
+            return None
+
+
+    elif sys.platform.startswith("linux"):  #linux (and other unix-like OS's)
+        try:
+            #Freedesktop Thumbnail Standard.
+            # https://specifications.freedesktop.org/thumbnail-spec/thumbnail-spec-latest.html
+
+            # 1. Get the URI
+            import urllib.parse
+            uri = "file://" + urllib.parse.quote(os.path.abspath(file_path))
+
+            # 2. Get mtime
+            mtime = int(os.path.getmtime(file_path))
+
+            # 3.  Hash the URI
+            import hashlib
+            hash = hashlib.md5(uri.encode('utf-8')).hexdigest()
+
+            # 4.  Look for the thumbnail in the cache locations.
+            thumbnail_dir = os.path.join(os.path.expanduser("~"), ".cache", "thumbnails")
+            #Normal Size
+            normal_path = os.path.join(thumbnail_dir, "normal", f"{hash}.png")
+            #Large Size
+            large_path = os.path.join(thumbnail_dir, "large", f"{hash}.png")
+
+            thumb_path_to_use = None
+            #First check large
+            if os.path.exists(large_path):
+                #check mtime.
+                thumb_mtime = int(os.path.getmtime(large_path))
+                if thumb_mtime >= mtime: # valid thumbnail
+                    thumb_path_to_use = large_path
+            #else check normal:
+            if thumb_path_to_use is None and os.path.exists(normal_path):
+                thumb_mtime = int(os.path.getmtime(normal_path))
+                if thumb_mtime >= mtime:  #valid thumbnail
+                    thumb_path_to_use = normal_path
+            #We found a valid cache
+            if thumb_path_to_use:
+                #Check the thumbnail actually loads!
+                pixmap = QPixmap(thumb_path_to_use)
+                if not pixmap.isNull():
+                    pixmap = pixmap.scaledToWidth(image_width, Qt.SmoothTransformation)
+                    return QIcon(pixmap)
+                else:
+                    #Remove bad thumbnail
+                    try:
+                        os.remove(thumb_path_to_use)
+                    except:
+                        pass
+                    return None
+            return None
+
+        except Exception as e:
+            print(f"Error getting Linux thumbnail: {e}")
+            return None
+    else: #other operating system
+        return None
 
 def get_file_paths(directory_path: Path) -> set[Path]:
     """
@@ -67,6 +214,7 @@ class ImageListModel(QAbstractListModel):
         self.redo_stack = []
         self.proxy_image_list_model = None
         self.image_list_selection_model = None
+        self.time_stats = Counter()
 
     def rowCount(self, parent=None) -> int:
         return len(self.images)
@@ -82,17 +230,6 @@ class ImageListModel(QAbstractListModel):
                 caption = self.tag_separator.join(image.tags)
                 text += f'\n{caption}'
             return text
-        if role == Qt.ItemDataRole.DecorationRole:
-            # The thumbnail. If the image already has a thumbnail stored, use
-            # it. Otherwise, generate a thumbnail and save it to the image.
-            if image.thumbnail:
-                return image.thumbnail
-            try:
-                return self.get_icon(image, self.image_list_image_width)
-            except Exception as e:
-                print(f"Error getting icon for {image.path} {e}")
-                return QIcon()
-
         if role == Qt.ItemDataRole.SizeHintRole:
             if image.thumbnail:
                 return image.thumbnail.availableSizes()[0]
@@ -104,38 +241,95 @@ class ImageListModel(QAbstractListModel):
             # Scale the dimensions to the image width.
             return QSize(self.image_list_image_width,
                          int(self.image_list_image_width * height / width))
-
-
+        
+        if role == Qt.ItemDataRole.DecorationRole:
+            # The thumbnail. If the image already has a thumbnail stored, use
+            # it. Otherwise, generate a thumbnail and save it to the image.
+            if image.thumbnail:
+                return image.thumbnail
+            try:
+                thumb = self.get_icon(image, self.image_list_image_width)
+                image.thumbnail = thumb
+                return image.thumbnail
+            except Exception as e:
+                print(f"Error getting icon for {image.path} {e}")
+                return QIcon()
+            
     def get_icon(self, image, image_width: int) -> QIcon:
-        """Load the image and return a QIcon while keeping aspect ratio."""
+        """
+        Load the image and return a QIcon while keeping aspect ratio,
+        utilizing the OS thumbnail cache when possible.
+        """
         try:
+            # --- OS Thumbnail Cache ---
+            start = time.perf_counter()
+            thumbnail = get_os_thumbnail(image.path, image_width)
+            self.time_stats['os_thumbnail_check'] += time.perf_counter() - start
+            if thumbnail:
+                image.thumbnail = thumbnail  # Store the thumbnail
+                return thumbnail
+
+            # --- JXL Handling ---
             if image.path.suffix.lower() == ".jxl":
-                pil_image = pilimage.open(image.path)  # Uses pillow-jxl
-                qimage = pil_to_qimage(pil_image)
+                start = time.perf_counter()
+                try:
+                    # Attempt to use Qt's built-in JXL support (might require plugin)
+                    qimage = QImage(str(image.path))
+                    if not qimage.isNull():
+                        pixmap = QPixmap.fromImage(qimage)
+                        pixmap = pixmap.scaled(image_width, image_width * 3, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        icon = QIcon(pixmap)
+                        self.time_stats['qt_jxl_path'] += time.perf_counter() - start
+                        image.thumbnail = icon
+                        return icon
+                    else:  # Fallback to pillow-jxl if Qt fails
+                        raise Exception("Qt couldn't load JXL directly")
 
-                # Convert to QPixmap and scale while keeping aspect ratio
-                pixmap = QPixmap.fromImage(qimage)
-                pixmap = pixmap.scaled(image_width, image_width * 3, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
-                icon = QIcon(pixmap)
-                image.thumbnail = icon
-                return icon
+                except Exception as e:  # Qt JXL support may not be available
+                    self.time_stats['jxl_thumbnail_to_qicon'] += time.perf_counter() - start
+                    print(f'failed getting jxl thumbnail due to {e}')
+                    start = time.perf_counter()
+                    pil_image = pilimage.open(image.path)  # Uses pillow-jxl
+                    qimage = pil_to_qimage(pil_image)
 
+                    # Convert to QPixmap and scale while keeping aspect ratio
+                    pixmap = QPixmap.fromImage(qimage)
+                    pixmap = pixmap.scaled(image_width, image_width * 3, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+                    icon = QIcon(pixmap)
+                    self.time_stats['jxl_exception_path'] += time.perf_counter() - start
+                    image.thumbnail = icon
+                    return icon
+
+            # --- Standard Image Handling ---
             else:
-                
+                start = time.perf_counter()
                 image_reader = QImageReader(str(image.path))
                 # Rotate the image based on the orientation tag.
                 image_reader.setAutoTransform(True)
-                pixmap = QPixmap.fromImageReader(image_reader).scaledToWidth(
-                    self.image_list_image_width,
-                    Qt.TransformationMode.SmoothTransformation)
+
+                # Try reading just the scaled thumbnail directly (optimization)
+                image_reader.setScaledSize(QSize(image_width, int(image_width * 1.5))) #Estimate height for aspect
+                qimage = image_reader.read() #Directly try the read.
+                if qimage.isNull():
+                    # If direct scaled read fails, load the full image
+                    image_reader = QImageReader(str(image.path))
+                    image_reader.setAutoTransform(True)
+                    pixmap = QPixmap.fromImageReader(image_reader).scaledToWidth(
+                        image_width, Qt.TransformationMode.SmoothTransformation
+                        )
+                else:
+                    pixmap = QPixmap.fromImage(qimage)  # Use qimage
+
                 thumbnail = QIcon(pixmap)
                 image.thumbnail = thumbnail
+                self.time_stats['non_jxl_path'] += time.perf_counter() - start
                 return thumbnail
 
         except Exception as e:
             print(f"Error loading image {image.path}: {e}")
-            return QIcon()       
+            return QIcon()
 
 
     def load_directory(self, directory_path: Path):

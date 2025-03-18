@@ -182,3 +182,68 @@ def get_jxl_size(path):
         if file.read(2) == bytes.fromhex("FF0A"):
             return decode_codestream(file)
         return decode_container(file)
+    
+	
+def get_jxl_thumbnail(path):
+    """
+    Retrieves the JPEG thumbnail from a JXL file, if present.  Returns
+    the thumbnail as bytes, or None if no thumbnail is found.  This function
+    prioritizes speed, reading only the necessary parts of the file.
+    """
+    with open(path, "rb") as file:
+        # Check for JXL signature (either codestream or container)
+        if file.read(2) == bytes.fromhex("FF0A"):
+            # It's a codestream.  No easy way to get the thumbnail
+            # without full decode.
+            return None  # No thumbnail readily available
+
+        # Assume it's a containerized JXL file.  Parse boxes.
+        def parse_box(file, file_start) -> dict:
+            file.seek(file_start)
+            LBox = int.from_bytes(file.read(4), "big")
+            XLBox = None
+            if 1 < LBox <= 8:
+                raise ValueError(f"Invalid LBox at byte {file_start}.")
+            if LBox == 1:
+                file.seek(file_start + 8)
+                XLBox = int.from_bytes(file.read(8), "big")
+                if XLBox <= 16:
+                    raise ValueError(f"Invalid XLBox at byte {file_start}.")
+            if XLBox:
+                header_length = 16
+                box_length = XLBox
+            else:
+                header_length = 8
+                if LBox == 0:
+                    box_length = os.fstat(file.fileno()).st_size - file_start
+                else:
+                    box_length = LBox
+            file.seek(file_start + 4)
+            box_type = file.read(4)
+            file.seek(file_start)
+            return {
+                "length": box_length,
+                "type": box_type,
+                "offset": header_length,
+            }
+        file.seek(0)
+        # Check for required boxes at the start
+        if file.read(12) != bytes.fromhex("0000000C 4A584C20 0D0A870A"):
+            raise ValueError("Invalid signature box.")
+        if file.read(20) != bytes.fromhex("00000014 66747970 6A786C20 00000000 6A786C20"):
+            raise ValueError("Invalid file type box.")
+
+        container_pointer = 32
+        file_size = os.fstat(file.fileno()).st_size
+        thumbnail_data = None
+
+        while container_pointer < file_size:
+            box = parse_box(file, container_pointer)
+            if box["type"] == b"jbrd":  # JPEG reconstruction data
+                file.seek(container_pointer + box["offset"])
+                thumbnail_data = file.read(box["length"] - box["offset"])
+                break # exit the loop as soon as thumbnail found
+            container_pointer += box["length"]
+
+        return thumbnail_data
+		

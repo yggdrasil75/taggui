@@ -181,6 +181,10 @@ class MainWindow(QMainWindow):
         self.image_tags_editor.tag_input_box.setFocus()
 
     def closeEvent(self, event: QCloseEvent):
+        print('timestats: ')
+        for key,value in self.image_list_model.time_stats.items():
+            print(f"{key}: {value:.4f} seconds")
+        #leaving that here for future potential testing.
         """Save the window geometry and state before closing."""
         self.settings.setValue('geometry', self.saveGeometry())
         self.settings.setValue('window_state', self.saveState())
