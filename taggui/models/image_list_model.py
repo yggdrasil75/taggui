@@ -201,7 +201,6 @@ class Scope(str, Enum):
     FILTERED_IMAGES = 'Filtered images'
     SELECTED_IMAGES = 'Selected images'
 
-
 class ImageListModel(QAbstractListModel):
     update_undo_and_redo_actions_requested = Signal()
 
@@ -216,20 +215,32 @@ class ImageListModel(QAbstractListModel):
         self.image_list_selection_model = None
         self.time_stats = Counter()
 
+
     def rowCount(self, parent=None) -> int:
         return len(self.images)
 
     def data(self, index: QModelIndex, role=None) -> Image | str | QIcon | QSize:
+        if not index.isValid():
+            return None  # Important: handle invalid indices
+
         image = self.images[index.row()]
         if role == Qt.ItemDataRole.UserRole:
             return image
         if role == Qt.ItemDataRole.DisplayRole:
-            # The text shown next to the thumbnail in the image list.
             text = image.path.name
             if image.tags:
                 caption = self.tag_separator.join(image.tags)
                 text += f'\n{caption}'
             return text
+        if role == Qt.ItemDataRole.DecorationRole:
+            if image.thumbnail:
+                return image.thumbnail
+            try:
+                return self.get_icon(image, self.image_list_image_width)
+            except Exception as e:
+                print(f"Error getting icon for {image.path} {e}")
+                return QIcon()
+
         if role == Qt.ItemDataRole.SizeHintRole:
             if image.thumbnail:
                 return image.thumbnail.availableSizes()[0]
@@ -241,25 +252,10 @@ class ImageListModel(QAbstractListModel):
             # Scale the dimensions to the image width.
             return QSize(self.image_list_image_width,
                          int(self.image_list_image_width * height / width))
-        
-        if role == Qt.ItemDataRole.DecorationRole:
-            # The thumbnail. If the image already has a thumbnail stored, use
-            # it. Otherwise, generate a thumbnail and save it to the image.
-            if image.thumbnail:
-                return image.thumbnail
-            try:
-                thumb = self.get_icon(image, self.image_list_image_width)
-                image.thumbnail = thumb
-                return image.thumbnail
-            except Exception as e:
-                print(f"Error getting icon for {image.path} {e}")
-                return QIcon()
-            
+
+
     def get_icon(self, image, image_width: int) -> QIcon:
-        """
-        Load the image and return a QIcon while keeping aspect ratio,
-        utilizing the OS thumbnail cache when possible.
-        """
+        """Load the image and return a QIcon while keeping aspect ratio."""
         try:
             # --- OS Thumbnail Cache ---
             start = time.perf_counter()
@@ -329,7 +325,7 @@ class ImageListModel(QAbstractListModel):
 
         except Exception as e:
             print(f"Error loading image {image.path}: {e}")
-            return QIcon()
+            return QIcon()       
 
 
     def load_directory(self, directory_path: Path):
