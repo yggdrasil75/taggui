@@ -105,7 +105,6 @@ class ImageListModel(QAbstractListModel):
             return QSize(self.image_list_image_width,
                          int(self.image_list_image_width * height / width))
 
-
     def get_icon(self, image, image_width: int) -> QIcon:
         """Load the image and return a QIcon while keeping aspect ratio."""
         try:
@@ -136,7 +135,6 @@ class ImageListModel(QAbstractListModel):
         except Exception as e:
             print(f"Error loading image {image.path}: {e}")
             return QIcon()       
-
 
     def load_directory(self, directory_path: Path):
         self.images.clear()
@@ -503,7 +501,6 @@ class ImageListModel(QAbstractListModel):
         self.dataChanged.emit(image_index, image_index)
         self.write_image_tags_to_disk(image)
 
-
     @Slot(list, list)
     def add_tags(self, tags: list[str], image_indices: list[QModelIndex]):
         """Add one or more tags to one or more images."""
@@ -519,7 +516,6 @@ class ImageListModel(QAbstractListModel):
         min_image_index = min(image_indices, key=lambda index: index.row())
         max_image_index = max(image_indices, key=lambda index: index.row())
         self.dataChanged.emit(min_image_index, max_image_index)
-
 
     @Slot(list, str)
     def rename_tags(self, old_tags: list[str], new_tag: str,

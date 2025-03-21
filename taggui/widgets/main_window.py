@@ -26,6 +26,7 @@ from widgets.auto_captioner import AutoCaptioner
 from widgets.image_list import ImageList
 from widgets.image_tags_editor import ImageTagsEditor
 from widgets.image_viewer import ImageViewer
+from widgets.dup import DuplicateFinderWidget
 
 ICON_PATH = Path('images/icon.ico')
 GITHUB_REPOSITORY_URL = 'https://github.com/jhc13/taggui'
@@ -65,6 +66,7 @@ class MainWindow(QMainWindow):
         self.create_central_widget()
         self.image_list = ImageList(self.proxy_image_list_model,
                                     tag_separator, image_list_image_width)
+        self.dupfinder = DuplicateFinderWidget(self.image_list)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,
                            self.image_list)
         self.image_tags_editor = ImageTagsEditor(
@@ -73,6 +75,8 @@ class MainWindow(QMainWindow):
             tag_separator)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,
                            self.image_tags_editor)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,
+                           self.dupfinder)
         self.all_tags_editor = AllTagsEditor(self.tag_counter_model)
         self.tag_counter_model.all_tags_list = (self.all_tags_editor
                                                 .all_tags_list)
