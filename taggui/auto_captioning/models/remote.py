@@ -1,5 +1,6 @@
 import base64
 import io
+from itertools import cycle
 import json
 import re
 from typing import Tuple
@@ -13,13 +14,31 @@ class RemoteGen(AutoCaptioningModel):
 	def __init__(self,
 					captioning_thread_: 'captioning_thread.CaptioningThread',
 					caption_settings: dict):
-		self.api_url = 'https://localhost:5001'
-		self.set_api_url(caption_settings['api_url'])
+		self.api_url = self.parse_api_urls(caption_settings['api_url'])
+		self.endpoint_cycle = cycle(self.api_url)
+		self.current_endpoint_index = 0
+#		self.set_api_url(caption_settings['api_url'])
 		self.headers = {"Content-Type": "application/json"}
 		if caption_settings['api_key'] and len(caption_settings['api_key']) > 0:
 			self.headers.append({"Authorization": 'Bearar ' + caption_settings['api_key']})
 		super().__init__(captioning_thread_, caption_settings)
 		
+	def parse_api_urls(self, remote_addresses: str) -> list[str]:
+		"""Parse semicolon-separated URLs into a list of properly formatted endpoints"""
+		urls = []
+		for addr in remote_addresses.split(';'):
+			addr = addr.strip()
+			if not addr:
+				continue
+			if addr.endswith('/chat/completions'):
+				urls.append(addr)
+			else:
+				urls.append(addr + '/v1/chat/completions')
+		return urls
+	
+	def get_next_endpoint(self) -> str:
+		return next(self.endpoint_cycle)
+
 	def get_processor(self):
 		return None
 	
@@ -112,8 +131,10 @@ class RemoteGen(AutoCaptioningModel):
 		"""
 		model_inputs['max_completion_tokens'] = model_inputs['max_new_tokens']
 		model_inputs['rep_pen'] = model_inputs['repetition_penalty']
+
+		endpoint = self.get_next_endpoint()
 		try:
-			response = requests.post(self.api_url, headers=self.headers, json=model_inputs, timeout=300)
+			response = requests.post(endpoint, headers=self.headers, json=model_inputs, timeout=300)
 			response.raise_for_status()
 			json_response = response.json()
 			caption = self.get_caption_from_generated_tokens(json_response)

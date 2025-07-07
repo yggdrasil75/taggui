@@ -11,6 +11,7 @@ from models.image_list_model import ImageListModel
 from utils.enums import CaptionPosition
 from utils.image import Image
 from utils.settings import get_tag_separator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def add_caption_to_tags(tags: list[str], caption: str,
@@ -97,6 +98,41 @@ class CaptioningThread(QThread):
         captioning_message = model.get_captioning_message(
             are_multiple_images_selected, captioning_start_datetime)
         print(captioning_message)
+        if hasattr(model, 'api_url'):
+            with ThreadPoolExecutor(max_workers=len(model.api_url)) as executor:
+                futures = {
+                    executor.submit(self.process_single, model, idx): idx
+                    for idx in self.selected_image_indices
+                }
+                completed = 0
+                for future in as_completed(futures):
+                    if self.is_canceled:
+                        print("Canceled Captioning.")
+                        executor.shutdown(wait=False)
+                        return
+                    result = future.result()
+                    if result is None:
+                        continue
+                    image_index, caption, tags, image_name, processing_time, console_output_caption = result
+                    self.caption_generated.emit(image_index, caption, tags)
+
+                    if are_multiple_images_selected:
+                        completed += 1
+                        self.progress_bar_update_requested.emit(completed)
+                    else:
+                        self.clear_console_text_edit_requested.emit()
+                    
+                    if console_output_caption is None:
+                        console_output_caption = caption
+            if are_multiple_images_selected:
+            captioning_end_datetime = datetime.now()
+            total_captioning_duration = (captioning_end_datetime - captioning_start_datetime).total_seconds()
+            average_captioning_duration = total_captioning_duration / selected_image_count
+            print(f'Finished captioning {selected_image_count} images in '
+                  f'{format_duration(total_captioning_duration)} '
+                  f'({average_captioning_duration:.1f} s/image) at '
+                  f'{captioning_end_datetime.strftime("%Y-%m-%d %H:%M:%S")}.')
+
         caption_position = self.caption_settings['caption_position']
         for i, image_index in enumerate(self.selected_image_indices):
             start_time = perf_counter()
@@ -135,6 +171,25 @@ class CaptioningThread(QThread):
                   f'{format_duration(total_captioning_duration)} '
                   f'({average_captioning_duration:.1f} s/image) at '
                   f'{captioning_end_datetime.strftime("%Y-%m-%d %H:%M:%S")}.')
+
+    def process_single(self, model: AutoCaptioningModel, image_index: QModelIndex):
+        """Process a single image and return the results"""
+        start_time = perf_counter()
+        image: Image = self.image_list_model.data(image_index, Qt.ItemDataRole.UserRole)
+        image_prompt = model.get_image_prompt(image)
+        
+        try:
+            model_inputs = model.get_model_inputs(image_prompt, image)
+        except UnidentifiedImageError:
+            print(f'Skipping {image.path.name} because its file format is '
+                    'not supported or it is a corrupted image.')
+            return None, None, None
+            
+        caption, console_output_caption = model.generate_caption(model_inputs, image_prompt)
+        tags = add_caption_to_tags(image.tags, caption, self.caption_settings['caption_position'])
+        
+        processing_time = perf_counter() - start_time
+        return image_index, caption, tags, image.path.name, processing_time, console_output_caption
 
     def run(self):
         try:
