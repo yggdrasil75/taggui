@@ -24,7 +24,7 @@ class DuplicateFinderWidget(QDockWidget):
             DEFAULT_SETTINGS['tag_separator'])
 		self.dups = ImageListModel(self.image_list_image_width, self.image_list_tag_separator)
 		#self.dup_proxy = ProxyImageListModel(self.dups, )
-		self.duplist = ImageGridWidget(self, self)
+		self.duplist = ImageGridWidget(self)
 		self.detectdupButton = TallPushButton('Detect Duplicates')
 		self.detectdupButton.clicked.connect(self.find_duplicates)
 		self.dupmethod = FocusedScrollSettingsComboBox(key='dedupmodel')
