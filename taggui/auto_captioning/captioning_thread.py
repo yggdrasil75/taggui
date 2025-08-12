@@ -77,16 +77,36 @@ class CaptioningThread(QThread):
     def run_captioning(self):
         model_id = self.caption_settings['model_id']
         model_class = get_model_class(model_id)
-        model: AutoCaptioningModel = model_class(
-            captioning_thread_=self, caption_settings=self.caption_settings)
-        error_message = model.get_error_message()
+        is_remote = hasattr(model_class, "api_urls")
+        if is_remote:
+            # Create multiple instances for remote model
+            temp_model = model_class(
+                captioning_thread_=self,
+                caption_settings=self.caption_settings
+            )
+            num_instances = len(temp_model.api_urls) if temp_model.api_urls else 1
+            models = [model_class(
+                captioning_thread_=self,
+                caption_settings=self.caption_settings
+            ) for _ in range(num_instances)]
+            for index, model in enumerate(models):
+                model.setapiIndex(index)
+        else:
+            # Single instance for local models
+            models = [model_class(
+                captioning_thread_=self,
+                caption_settings=self.caption_settings
+            )]
+        #model: AutoCaptioningModel = model_class(captioning_thread_=self, caption_settings=self.caption_settings)
+        error_message = models[0].get_error_message()
         if error_message:
             self.is_error = True
             self.clear_console_text_edit_requested.emit()
             print(error_message)
             return
-        model.load_processor_and_model()
-        model.monkey_patch_after_loading()
+        for model in models:
+            model.load_processor_and_model()
+            model.monkey_patch_after_loading()
         if self.is_canceled:
             print('Canceled captioning.')
             return
@@ -94,24 +114,27 @@ class CaptioningThread(QThread):
         selected_image_count = len(self.selected_image_indices)
         are_multiple_images_selected = selected_image_count > 1
         captioning_start_datetime = datetime.now()
+
         captioning_message = model.get_captioning_message(
             are_multiple_images_selected, captioning_start_datetime)
         print(captioning_message)
+
         caption_position = self.caption_settings['caption_position']
-        for i, image_index in enumerate(self.selected_image_indices):
+        def realcaptionthread(i, image_index):
             start_time = perf_counter()
             if self.is_canceled:
                 print('Canceled captioning.')
                 return
+            model = models[i % len(models)] if is_remote else models[0]
             image: Image = self.image_list_model.data(image_index,
-                                                      Qt.ItemDataRole.UserRole)
+                                                    Qt.ItemDataRole.UserRole)
             image_prompt = model.get_image_prompt(image)
             try:
                 model_inputs = model.get_model_inputs(image_prompt, image)
             except UnidentifiedImageError:
                 print(f'Skipping {image.path.name} because its file format is '
-                      'not supported or it is a corrupted image.')
-                continue
+                    'not supported or it is a corrupted image.')
+                return
             caption, console_output_caption = model.generate_caption(
                 model_inputs, image_prompt)
             tags = add_caption_to_tags(image.tags, caption, caption_position)
@@ -123,7 +146,11 @@ class CaptioningThread(QThread):
             if console_output_caption is None:
                 console_output_caption = caption
             print(f'{image.path.name} ({perf_counter() - start_time:.1f} s):\n'
-                  f'{console_output_caption}')
+                f'{console_output_caption}')
+
+        for i1, image_index1 in enumerate(self.selected_image_indices):
+            realcaptionthread(i1, image_index1)
+
         if are_multiple_images_selected:
             captioning_end_datetime = datetime.now()
             total_captioning_duration = ((captioning_end_datetime

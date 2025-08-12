@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import random
 import re
 from typing import Tuple
 
@@ -13,7 +14,8 @@ class RemoteGen(AutoCaptioningModel):
 	def __init__(self,
 					captioning_thread_: 'captioning_thread.CaptioningThread',
 					caption_settings: dict):
-		self.api_url = 'https://localhost:5001'
+		self.api_urls = [] #'https://localhost:5001'
+		self.currentapiurl = None
 		self.set_api_url(caption_settings['api_url'])
 		self.headers = {"Content-Type": "application/json"}
 		if caption_settings['api_key'] and len(caption_settings['api_key']) > 0:
@@ -32,11 +34,27 @@ class RemoteGen(AutoCaptioningModel):
 	def get_model(self):
 		return None  # No local model for API interaction
 	
-	def set_api_url(self, remote_address:str):
-		if remote_address.endswith('/chat/completions'):
-			self.api_url = remote_address
-		else:
-			self.api_url = remote_address + '/v1/chat/completions'
+	def setapiIndex(self, index: int):
+		self.current_api_url = self.api_urls[index]
+
+	def set_api_url(self, remote_addresses:str):
+		urls = [url.strip() for url in remote_addresses.split(';') if url.strip()]
+		self.api_urls = []
+		for url in urls:
+			if url.endswith('/chat/completions'):
+				self.api_urls.append(url)
+			else:
+				self.api_urls.append(url + '/v1/chat/completions')
+		
+		if self.api_urls:
+			self.current_api_url = random.choice(self.api_urls)
+
+	def rotate_api_url(self):
+		if len(self.api_urls) > 1:
+			current_index = self.api_urls.index(self.current_api_url)
+			next_index = (current_index + 1) % len(self.api_urls)
+			self.current_api_url = self.api_urls[next_index]
+			print(f"Switched to API endpoint: {self.current_api_url}")
 
 	@staticmethod
 	def get_default_prompt() -> str:
@@ -57,7 +75,6 @@ class RemoteGen(AutoCaptioningModel):
 		}
 		]
 		return messages
-	
 
 	def get_image_prompt(self, image: Image) -> str | None:
 		if self.prompt:
@@ -107,13 +124,10 @@ class RemoteGen(AutoCaptioningModel):
 		return payload
 
 	def generate_caption(self, model_inputs: dict, image_prompt: str) -> Tuple[str, str]:
-		"""
-		Interacts with the API endpoint to generate the caption.
-		"""
 		model_inputs['max_completion_tokens'] = model_inputs['max_new_tokens']
 		model_inputs['rep_pen'] = model_inputs['repetition_penalty']
 		try:
-			response = requests.post(self.api_url, headers=self.headers, json=model_inputs, timeout=300)
+			response = requests.post(self.current_api_url, headers=self.headers, json=model_inputs, timeout=300)
 			response.raise_for_status()
 			json_response = response.json()
 			caption = self.get_caption_from_generated_tokens(json_response)
@@ -121,6 +135,7 @@ class RemoteGen(AutoCaptioningModel):
 			return caption, console_output_caption
 		except requests.exceptions.RequestException as e:
 			print(f"Error during API request: {e}")
+			self.rotate_api_url()
 			return "", str(object=e)
 		except (KeyError, json.JSONDecodeError) as e:
 			print(f"Error parsing API response: {e}")
