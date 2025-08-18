@@ -137,7 +137,7 @@ class CaptioningThread(ModelThread):
 
     def run(self):
         try:
-            self.run_captioning()
+            self.load_model()
         except Exception as exception:
             self.is_error = True
             # Show the error message in the console text edit.
