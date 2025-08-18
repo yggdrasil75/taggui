@@ -1,9 +1,6 @@
-from datetime import datetime
 from pathlib import Path
-from time import perf_counter
 
-from PIL import UnidentifiedImageError
-from PySide6.QtCore import QModelIndex, QThread, Qt, Signal
+from PySide6.QtCore import QModelIndex, Signal
 
 from auto_captioning.auto_captioning_model import AutoCaptioningModel
 from auto_captioning.models_list import get_model_class
@@ -11,6 +8,7 @@ from models.image_list_model import ImageListModel
 from utils.enums import CaptionPosition
 from utils.image import Image
 from utils.settings import get_tag_separator
+from utils.ModelThread import ModelThread
 
 
 def add_caption_to_tags(tags: list[str], caption: str,
@@ -36,45 +34,23 @@ def add_caption_to_tags(tags: list[str], caption: str,
     return tags
 
 
-def format_duration(seconds: float) -> str:
-    seconds_per_minute = 60
-    seconds_per_hour = 60 * seconds_per_minute
-    seconds_per_day = 24 * seconds_per_hour
-    if seconds < seconds_per_minute:
-        return f'{seconds:.1f} seconds'
-    if seconds < seconds_per_hour:
-        minutes = seconds / seconds_per_minute
-        return f'{minutes:.1f} minutes'
-    if seconds < seconds_per_day:
-        hours = seconds / seconds_per_hour
-        return f'{hours:.1f} hours'
-    days = seconds / seconds_per_day
-    return f'{days:.1f} days'
-
-
-class CaptioningThread(QThread):
-    text_outputted = Signal(str)
-    clear_console_text_edit_requested = Signal()
+class CaptioningThread(ModelThread):
     # The image index, the caption, and the tags with the caption added. The
     # third parameter must be declared as `list` instead of `list[str]` for it
     # to work.
     caption_generated = Signal(QModelIndex, str, list)
-    progress_bar_update_requested = Signal(int)
 
     def __init__(self, parent, image_list_model: ImageListModel,
                  selected_image_indices: list[QModelIndex],
                  caption_settings: dict, tag_separator: str,
                  models_directory_path: Path | None):
-        super().__init__(parent)
-        self.image_list_model = image_list_model
-        self.selected_image_indices = selected_image_indices
+        super().__init__(parent, image_list_model, selected_image_indices)
         self.caption_settings = caption_settings
         self.tag_separator = tag_separator
         self.models_directory_path = models_directory_path
-        self.is_error = False
-        self.is_canceled = False
+        self.model: AutoCaptioningModel | None = None
 
-    def run_captioning(self):
+    def load_model(self):
         model_id = self.caption_settings['model_id']
         model_class = get_model_class(model_id)
         is_remote = hasattr(model_class, "api_urls")
@@ -98,11 +74,9 @@ class CaptioningThread(QThread):
                 caption_settings=self.caption_settings
             )]
         #model: AutoCaptioningModel = model_class(captioning_thread_=self, caption_settings=self.caption_settings)
-        error_message = models[0].get_error_message()
-        if error_message:
+        self.error_message = model.get_error_message()
+        if self.error_message:
             self.is_error = True
-            self.clear_console_text_edit_requested.emit()
-            print(error_message)
             return
         for model in models:
             model.load_processor_and_model()
@@ -114,11 +88,9 @@ class CaptioningThread(QThread):
         selected_image_count = len(self.selected_image_indices)
         are_multiple_images_selected = selected_image_count > 1
         captioning_start_datetime = datetime.now()
-
         captioning_message = model.get_captioning_message(
             are_multiple_images_selected, captioning_start_datetime)
         print(captioning_message)
-
         caption_position = self.caption_settings['caption_position']
         def realcaptionthread(i, image_index):
             start_time = perf_counter()
