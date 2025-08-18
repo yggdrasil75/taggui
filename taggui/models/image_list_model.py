@@ -5,20 +5,23 @@ from collections import Counter, deque
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import List, Set, Tuple
+import json
 
 import exifread
-from PySide6.QtCore import (QAbstractListModel, QModelIndex, QSize, Qt, Signal,
-                            Slot)
-from PySide6.QtGui import QIcon, QImageReader, QPixmap, QImage
+
+import exifread
+import imagesize
+from PySide6.QtCore import (QAbstractListModel, QModelIndex, QMimeData, QPoint,
+                            QRect, QSize, Qt, QUrl, Signal, Slot)
+from PySide6.QtGui import QIcon, QImage, QImageReader, QPixmap
 from PySide6.QtWidgets import QMessageBox
 import pillow_jxl
 from PIL import Image as pilimage  # Import Pillow's Image class
 
 
-from utils.image import Image
+from utils.image import Image, ImageMarking, Marking
 from utils.jxlutil import get_jxl_size
-from utils.settings import DEFAULT_SETTINGS, get_settings
+from utils.settings import DEFAULT_SETTINGS, settings
 from utils.utils import get_confirmation_dialog_reply, pluralize
 
 UNDO_STACK_SIZE = 32
@@ -32,7 +35,7 @@ def pil_to_qimage(pil_image):
 
 def get_file_paths(directory_path: Path) -> set[Path]:
     """
-    Recursively get all file paths in a directory, including 
+    Recursively get all file paths in a directory, including
     subdirectories.
     """
     file_paths = set()
